@@ -3,7 +3,48 @@
 <head>
   <meta charset="UTF-8">
   <title>Tinemu Data Bocor</title>
-  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="style.css?v=2">
+  <!-- Quick check: if stylesheet fails to load, show a small non-intrusive notice -->
+  <script>
+    (function(){
+      const expected = 'style.css';
+      function checkStylesheet(){
+        let loaded = false;
+        for(const ss of document.styleSheets){
+          try{
+            if(ss.href && ss.href.indexOf(expected) !== -1){
+              const rules = ss.cssRules || ss.rules;
+              if(rules && rules.length > 0) loaded = true;
+            }
+          }catch(e){ /* cross-origin or not yet loaded */ }
+        }
+        if(!loaded){
+          console.warn('style.css mungkin belum dimuat (cache/404).');
+          document.addEventListener('DOMContentLoaded', ()=>{
+            const note = document.createElement('div');
+            note.id = 'css-load-warning';
+            note.style.position = 'fixed';
+            note.style.right = '12px';
+            note.style.top = '12px';
+            note.style.background = '#fff4e5';
+            note.style.color = '#7a4a00';
+            note.style.padding = '8px 12px';
+            note.style.border = '1px solid #ffd27a';
+            note.style.borderRadius = '6px';
+            note.style.zIndex = 9999;
+            note.style.boxShadow = '0 4px 10px rgba(0,0,0,0.06)';
+            note.innerText = '⚠️ stylesheet tidak terdeteksi — coba Ctrl+F5 untuk muat ulang.';
+            document.body.appendChild(note);
+          });
+        } else {
+          console.log('style.css terdeteksi (rules present)');
+        }
+      }
+      // run check shortly after load so stylesheet has time to parse
+      if (document.readyState === 'complete') setTimeout(checkStylesheet, 300);
+      else window.addEventListener('load', ()=> setTimeout(checkStylesheet, 300));
+    })();
+  </script>
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@4/dist/tesseract.min.js"></script>
 </head>
 <body>
