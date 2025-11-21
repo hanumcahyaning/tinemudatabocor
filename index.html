@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <title>Tinemu Data Bocor</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@4/dist/tesseract.min.js"></script>
+</head>
+<body>
+  <div class="container">
+    <h2>🔐 Tinemu Data Bocor</h2>
+
+    <div class="vertical-divider" aria-hidden="true"></div>
+
+    <div class="row">
+      <!-- Left: Input -->
+      <div class="col-12 col-md-6">
+        <p class="col-note">Masukkan data di kolom ini. Isi minimal satu dari: Email, Nomor HP, IP atau unggah Foto KTP.</p>
+        <div class="section">
+          <h5 class="mb-3 text-primary">Input</h5>
+          <label for="email">📧 Email:</label>
+          <input type="text" id="email" placeholder="contoh@email.com">
+
+          <label for="phone">📱 Nomor HP:</label>
+          <input type="text" id="phone" placeholder="08xxxxxxxxxx">
+
+          <label for="ip">🌐 IP Address:</label>
+          <input type="text" id="ip" placeholder="192.168.1.1">
+
+          <!-- NIK input removed: NIK will be read only from uploaded KTP image -->
+
+          <label for="ktp">🖼️ Upload Foto KTP:</label>
+          <input type="file" id="ktp" accept="image/*">
+
+          <div class="actions">
+            <button class="btn-primary" onclick="checkData()">🔎 Periksa Risiko</button>
+            <button class="btn-secondary" onclick="refreshForm()">🔄 Reset</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Right: Output -->
+      <div class="col-12 col-md-6">
+        <div class="section">
+          <h5 class="mb-3 text-primary">Hasil Pengecekan</h5>
+          <div id="output" class="result"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    function refreshForm() {
+      document.getElementById("email").value = "";
+      document.getElementById("phone").value = "";
+      document.getElementById("ip").value = "";
+      document.getElementById("ktp").value = "";
+      document.getElementById("output").innerText = "";
+    }
+
+    function validateNIK(nik) {
+      if (!/^\d{16}$/.test(nik)) return "❌ Format NIK tidak valid (harus 16 digit angka)";
+      const kodeWilayah = nik.slice(0, 6);
+      const tanggalLahir = nik.slice(6, 12);
+      const genderCode = parseInt(tanggalLahir.slice(0, 2), 10);
+      const jenisKelamin = genderCode > 40 ? "Perempuan" : "Laki-laki";
+      const tanggal = genderCode > 40 ? genderCode - 40 : genderCode;
+      const bulan = tanggalLahir.slice(2, 4);
+      const tahun = tanggalLahir.slice(4, 6);
+      return `✅ Format NIK valid\nWilayah: ${kodeWilayah}\nJenis Kelamin: ${jenisKelamin}\nTanggal Lahir: ${tanggal}-${bulan}-19${tahun}`;
+    }
+
+    function getPhoneRisk(normalized) {
+      if (normalized === "081234567890") return "Tinggi – nomor dummy umum";
+      if (normalized.length < 10) return "Tinggi – nomor terlalu pendek";
+      if (/^08\d{4,}$/.test(normalized) && /^(\d)\1{5,}$/.test(normalized.slice(3))) return "Tinggi – pola angka berulang";
+      const prefix = normalized.slice(0, 4);
+      const riskMap = {
+        "0811": "Sedang – Telkomsel", "0812": "Sedang – Telkomsel", "0813": "Sedang – Telkomsel",
+        "0821": "Sedang – Telkomsel", "0822": "Sedang – Telkomsel", "0823": "Sedang – Telkomsel",
+        "0852": "Sedang – Telkomsel", "0853": "Sedang – Telkomsel",
+        "0814": "Sedang – Indosat", "0815": "Sedang – Indosat", "0816": "Sedang – Indosat",
+        "0855": "Sedang – Indosat", "0856": "Sedang – Indosat", "0857": "Sedang – Indosat", "0858": "Sedang – Indosat",
+        "0817": "Lemah – XL", "0818": "Lemah – XL", "0819": "Lemah – XL", "0859": "Lemah – XL", "0877": "Lemah – XL", "0878": "Lemah – XL",
+        "0831": "Lemah – Axis", "0832": "Lemah – Axis", "0833": "Lemah – Axis", "0838": "Lemah – Axis",
+        "0895": "Sedang – Tri", "0896": "Sedang – Tri", "0897": "Sedang – Tri", "0898": "Sedang – Tri", "0899": "Sedang – Tri",
+        "0881": "Tinggi – Smartfren", "0882": "Tinggi – Smartfren", "0883": "Tinggi – Smartfren", "0884": "Tinggi – Smartfren",
+        "0885": "Tinggi – Smartfren", "0886": "Tinggi – Smartfren", "0887": "Tinggi – Smartfren", "0888": "Tinggi – Smartfren", "0889": "Tinggi – Smartfren"
+      };
+      return riskMap[prefix] || "Tidak dapat ditentukan – prefix tidak dikenali";
+    }
+
+    function escapeHtml(unsafe) {
+      if (!unsafe) return '';
+      return String(unsafe).replace(/[&<>'"]/g, function (m) {
+        return ({'&':'&amp;','<':'&lt;','>':'&gt;','\'':'&#039;','"':'&quot;'})[m];
+      });
+    }
+
+    async function checkData() {
+      const email = document.getElementById("email").value.trim();
+      const phone = document.getElementById("phone").value.trim();
+      const ip = document.getElementById("ip").value.trim();
+      // NIK is obtained only from uploaded KTP via OCR
+      const ktpFile = document.getElementById("ktp").files[0];
+
+      let html = '';
+      const emailRegex = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+      const phoneRegex = /^(\+62|62|0)?8[1-9][0-9]{6,10}$/;
+      const ipRegex = /^(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$/;
+
+      // Email -> clickable HIBP link
+      if (email) {
+        if (emailRegex.test(email)) {
+          const href = 'https://haveibeenpwned.com/?email=' + encodeURIComponent(email);
+          html += `<p>✅ Email valid: <strong>${escapeHtml(email)}</strong><br>🔗 <a href="${href}" target="_blank" rel="noopener noreferrer">Cek di HaveIBeenPwned</a></p>`;
+        } else {
+          html += `<p>❌ Format email tidak valid: <strong>${escapeHtml(email)}</strong></p>`;
+        }
+      }
+
+      // Phone
+      if (phone) {
+        const normalized = phone.replace(/^(\+62|62)/, '0');
+        if (phoneRegex.test(phone)) {
+          html += `<p>✅ Nomor HP valid: <strong>${escapeHtml(phone)}</strong><br>Risiko: ${escapeHtml(getPhoneRisk(normalized))}</p>`;
+        } else {
+          html += `<p>❌ Nomor HP tidak valid: <strong>${escapeHtml(phone)}</strong></p>`;
+        }
+      }
+
+      // IP
+      if (ip) {
+        html += ipRegex.test(ip)
+          ? `<p>✅ IP Address valid: <strong>${escapeHtml(ip)}</strong><br>Risiko: Rendah</p>`
+          : `<p>❌ IP Address tidak valid: <strong>${escapeHtml(ip)}</strong></p>`;
+      }
+
+      // NIK detection will be done via OCR from uploaded KTP
+      let nikFound = '';
+
+      // OCR from KTP if uploaded and no valid input NIK yet
+      if (ktpFile && !nikFound) {
+        html += `<p>📁 File KTP terdeteksi: <strong>${escapeHtml(ktpFile.name)}</strong><br>⏳ Memindai teks dari gambar...</p>`;
+        const ktpUrl = URL.createObjectURL(ktpFile);
+        try {
+          const { data: { text } } = await Tesseract.recognize(ktpUrl, 'ind');
+          // search for 16-digit NIK
+          const nikMatch = text.match(/\b\d{16}\b/);
+          const nameMatch = text.match(/(?<=Nama\s?:\s?).+/i);
+
+          // Jika salah satu atau kedua ditemukan, tampilkan apa yang berhasil dikenali.
+          if (nikMatch || nameMatch) {
+            if (nikMatch) {
+              nikFound = nikMatch[0];
+              const dukUrl = 'https://dukcapil.kemendagri.go.id/?nik=' + encodeURIComponent(nikFound);
+              html += `<p>📄 Hasil OCR:<br>NIK: <strong>${escapeHtml(nikFound)}</strong> — 🔗 <a href="${dukUrl}" target="_blank" rel="noopener noreferrer">Cek di Dukcapil</a></p>`;
+            } else {
+              html += `<p>📄 Hasil OCR: NIK tidak ditemukan.</p>`;
+            }
+            html += `<p>Nama: ${escapeHtml(nameMatch ? nameMatch[0].trim() : 'Tidak ditemukan')}</p>`;
+          } else {
+            // Jika kedua-duanya tidak ditemukan, tampilkan pesan validasi khusus
+            html += `<p>📄 Hasil OCR: NIK dan Nama tidak ditemukan.</p>`;
+            html += `<p style="color:#b00; font-weight:bold;">data tidak valid, mohon unggah data lain.</p>`;
+          }
+        } catch (err) {
+          html += `<p>❌ Gagal melakukan OCR pada KTP: ${escapeHtml(err.message || String(err))}</p>`;
+        } finally {
+          URL.revokeObjectURL(ktpUrl);
+        }
+      }
+
+      // If no NIK provided and no KTP uploaded, show warning
+      if (!nikFound && !ktpFile) {
+        html += `<p style="color:#b00; font-weight:bold;">data tidak valid, mohon unggah data lain.</p>`;
+      }
+
+      document.getElementById("output").innerHTML = html || '<p>ℹ️ Tidak ada masukan yang valid untuk diperiksa.</p>';
+    }
+  </script>
+</body>
+</html>
