@@ -30,7 +30,7 @@
           <!-- NIK input removed: NIK will be read only from uploaded KTP image -->
 
           <label for="ktp">🖼️ Upload Foto KTP:</label>
-          <input type="file" id="ktp" accept="image/*">
+          <input type="file" id="ktp" accept="image/*" onchange="handleKtpUpload(event)">
 
           <div class="actions">
             <button class="btn-primary" onclick="checkData()">🔎 Periksa Risiko</button>
@@ -56,6 +56,152 @@
       document.getElementById("ip").value = "";
       document.getElementById("ktp").value = "";
       document.getElementById("output").innerText = "";
+    }
+
+    /* --- External scanning + parsing helpers --- */
+    async function handleKtpUpload(event) {
+      const file = event.target.files && event.target.files[0];
+      if (!file) return;
+      const output = document.getElementById('output');
+      output.innerHTML = `<p>📁 File terunggah: <strong>${escapeHtml(file.name)}</strong><br>⏳ Memindai OCR lokal...</p>`;
+
+        try {
+          const ktpUrl = URL.createObjectURL(file);
+          const preprocessed = await preprocessImageFile(file, 1200);
+          const worker = await getOcrWorker();
+          const { data: { text } } = await worker.recognize(preprocessed);
+          const parsed = parseKtpText(text || '');
+          window.lastKtpParse = Object.assign({ fileName: file.name }, parsed);
+          output.innerHTML = buildKtpHtmlFromParsed(parsed);
+          URL.revokeObjectURL(ktpUrl);
+        } catch (err) {
+          console.error('OCR lokal gagal:', err);
+          // Jangan tampilkan pesan kegagalan teknis; tunjukkan hasil kosong sehingga
+          // hanya akan muncul pesan 'data yang diunggah tidak valid' bila nama dan NIK benar-benar tidak ditemukan
+          const parsed = { nik: '', name: '', tempat: '', tgl: '', address: '' };
+          window.lastKtpParse = Object.assign({ fileName: file.name }, parsed);
+          output.innerHTML = buildKtpHtmlFromParsed(parsed);
+      }
+    }
+
+    /* performExternalScan removed — using local Tesseract OCR only */
+
+    function parseKtpText(text) {
+      const normalized = (text || '').replace(/\r/g, '\n');
+      const nikMatch = normalized.match(/\b\d{16}\b/);
+      const nik = nikMatch ? nikMatch[0] : '';
+
+      let name = '';
+      const nameMatch = normalized.match(/Nama\s*[:\-]?\s*(.+)/i);
+      if (nameMatch) name = nameMatch[1].split(/\n|\r/)[0].trim();
+
+      let address = '';
+      const addrMatch = normalized.match(/Alamat\s*[:\-]?\s*([\s\S]{5,200}?)(?=\n\s*(?:Nama|Tempat|Tempat\/Tgl|Tanggal|NIK|$))/i);
+      if (addrMatch) address = addrMatch[1].trim().replace(/\n+/g, ' ');
+
+      let tempat = '';
+      let tgl = '';
+      const tpltglMatch = normalized.match(/Tempat\s*\/?\s*Tgl(?:\s*Lahir)?\s*[:\-]?\s*(.+)/i);
+      if (tpltglMatch) {
+        const v = tpltglMatch[1].split(/\n/)[0].trim();
+        const parts = v.split(',');
+        if (parts.length >= 2) {
+          tempat = parts[0].trim();
+          tgl = parts.slice(1).join(',').trim();
+        } else {
+          const dateMatch = v.match(/\b(\d{1,2}[-\/\.\s]\d{1,2}[-\/\.\s]\d{2,4})\b/);
+          if (dateMatch) {
+            tgl = dateMatch[1];
+            tempat = v.replace(dateMatch[0], '').trim().replace(/[,\-]$/,'').trim();
+          } else {
+            tempat = v;
+          }
+        }
+      } else {
+        const tempatMatch = normalized.match(/Tempat\s*Lahir\s*[:\-]?\s*(.+)/i);
+        const tanggalMatch = normalized.match(/Tanggal\s*Lahir\s*[:\-]?\s*(.+)/i);
+        if (tempatMatch) tempat = tempatMatch[1].split(/\n/)[0].trim();
+        if (tanggalMatch) tgl = tanggalMatch[1].split(/\n/)[0].trim();
+      }
+
+      return { nik, name, tempat, tgl, address };
+    }
+
+    function buildKtpHtmlFromParsed(parsed) {
+      const { nik, name, tempat, tgl, address } = parsed || {};
+      let out = '<h6>📄 Hasil Pemindaian KTP</h6>';
+      if (nik || name || tempat || tgl || address) {
+        if (nik) out += `<p>NIK: <strong>${escapeHtml(nik)}</strong> — 🔗 <a href="https://dukcapil.kemendagri.go.id/?nik=${encodeURIComponent(nik)}" target="_blank" rel="noopener noreferrer">Cek di Dukcapil</a></p>`;
+        if (name) out += `<p>Nama: <strong>${escapeHtml(name)}</strong></p>`;
+        if (tempat || tgl) out += `<p>Tempat/Tgl Lahir: <strong>${escapeHtml((tempat || '') + (tempat && tgl ? ', ' : '') + (tgl || ''))}</strong></p>`;
+        if (address) out += `<p>Alamat: ${escapeHtml(address)}</p>`;
+      } else {
+        out += `<p style="color:#b00; font-weight:bold;">data yang diunggah tidak valid, mohon unggah data lain.</p>`;
+      }
+      return out;
+    }
+
+    // --- Faster OCR helpers: reuse worker + preprocess image ---
+    async function getOcrWorker() {
+      if (window._ocrWorker) return window._ocrWorker;
+      const worker = Tesseract.createWorker({
+        logger: m => {
+          /* optional: console.log(m); */
+        }
+      });
+      await worker.load();
+      await worker.loadLanguage('ind');
+      await worker.initialize('ind');
+      // Use a faster PSM (assume blocks of text) and reduce some overhead
+      await worker.setParameters({ tessedit_pageseg_mode: '6' });
+      window._ocrWorker = worker;
+      return worker;
+    }
+
+    // Resize file -> dataURL (image) to smaller width to speed recognition
+    function preprocessImageFile(file, maxWidth) {
+      return new Promise((resolve, reject) => {
+        const img = new Image();
+        const url = URL.createObjectURL(file);
+        img.onload = () => {
+          const ratio = img.width && img.width > maxWidth ? maxWidth / img.width : 1;
+          const canvas = document.createElement('canvas');
+          canvas.width = Math.round(img.width * ratio);
+          canvas.height = Math.round(img.height * ratio);
+          const ctx = canvas.getContext('2d');
+          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+          canvas.toBlob(blob => {
+            URL.revokeObjectURL(url);
+            const dataUrl = URL.createObjectURL(blob);
+            resolve(dataUrl);
+          }, 'image/jpeg', 0.8);
+        };
+        img.onerror = e => { URL.revokeObjectURL(url); reject(e); };
+        img.src = url;
+      });
+    }
+
+    // When we already have a blob (from fetch), similar helper
+    function preprocessImageBlob(blob, maxWidth) {
+      return new Promise((resolve, reject) => {
+        const img = new Image();
+        const url = URL.createObjectURL(blob);
+        img.onload = () => {
+          const ratio = img.width && img.width > maxWidth ? maxWidth / img.width : 1;
+          const canvas = document.createElement('canvas');
+          canvas.width = Math.round(img.width * ratio);
+          canvas.height = Math.round(img.height * ratio);
+          const ctx = canvas.getContext('2d');
+          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+          canvas.toBlob(b => {
+            URL.revokeObjectURL(url);
+            const dataUrl = URL.createObjectURL(b);
+            resolve(dataUrl);
+          }, 'image/jpeg', 0.8);
+        };
+        img.onerror = e => { URL.revokeObjectURL(url); reject(e); };
+        img.src = url;
+      });
     }
 
     function validateNIK(nik) {
@@ -115,7 +261,7 @@
           const href = 'https://haveibeenpwned.com/?email=' + encodeURIComponent(email);
           html += `<p>✅ Email valid: <strong>${escapeHtml(email)}</strong><br>🔗 <a href="${href}" target="_blank" rel="noopener noreferrer">Cek di HaveIBeenPwned</a></p>`;
         } else {
-          html += `<p>❌ Format email tidak valid: <strong>${escapeHtml(email)}</strong></p>`;
+          html += `<p>❌ Email tidak valid: <strong>${escapeHtml(email)}</strong></p>`;
         }
       }
 
@@ -139,41 +285,48 @@
       // NIK detection will be done via OCR from uploaded KTP
       let nikFound = '';
 
-      // OCR from KTP if uploaded and no valid input NIK yet
-      if (ktpFile && !nikFound) {
+      // Jika file sudah diunggah, gunakan hasil pemindaian yang mungkin telah disimpan
+      if (ktpFile) {
         html += `<p>📁 File KTP terdeteksi: <strong>${escapeHtml(ktpFile.name)}</strong><br>⏳ Memindai teks dari gambar...</p>`;
-        const ktpUrl = URL.createObjectURL(ktpFile);
         try {
-          const { data: { text } } = await Tesseract.recognize(ktpUrl, 'ind');
-          // search for 16-digit NIK
-          const nikMatch = text.match(/\b\d{16}\b/);
-          const nameMatch = text.match(/(?<=Nama\s?:\s?).+/i);
-
-          // Jika salah satu atau kedua ditemukan, tampilkan apa yang berhasil dikenali.
-          if (nikMatch || nameMatch) {
-            if (nikMatch) {
-              nikFound = nikMatch[0];
-              const dukUrl = 'https://dukcapil.kemendagri.go.id/?nik=' + encodeURIComponent(nikFound);
-              html += `<p>📄 Hasil OCR:<br>NIK: <strong>${escapeHtml(nikFound)}</strong> — 🔗 <a href="${dukUrl}" target="_blank" rel="noopener noreferrer">Cek di Dukcapil</a></p>`;
-            } else {
-              html += `<p>📄 Hasil OCR: NIK tidak ditemukan.</p>`;
-            }
-            html += `<p>Nama: ${escapeHtml(nameMatch ? nameMatch[0].trim() : 'Tidak ditemukan')}</p>`;
+          if (window.lastKtpParse && window.lastKtpParse.fileName === ktpFile.name) {
+            const parsed = window.lastKtpParse;
+            if (parsed.nik) nikFound = parsed.nik;
+            html += buildKtpHtmlFromParsed(parsed);
           } else {
-            // Jika kedua-duanya tidak ditemukan, tampilkan pesan validasi khusus
-            html += `<p>📄 Hasil OCR: NIK dan Nama tidak ditemukan.</p>`;
-            html += `<p style="color:#b00; font-weight:bold;">data tidak valid, mohon unggah data lain.</p>`;
+            // Jika tidak ada hasil dari handler upload, gunakan OCR lokal sebagai fallback
+            const ktpUrl = URL.createObjectURL(ktpFile);
+            try {
+              // Use preprocessed image + reused worker to speed up
+              const blob = await fetch(ktpUrl).then(r => r.blob());
+              const preprocessed = await preprocessImageBlob(blob, 1200);
+              const worker = await getOcrWorker();
+              const { data: { text } } = await worker.recognize(preprocessed);
+              const parsed = parseKtpText(text || '');
+              if (parsed.nik) nikFound = parsed.nik;
+              html += buildKtpHtmlFromParsed(parsed);
+            } catch (err) {
+              console.error('OCR pada KTP gagal:', err);
+              // Simpan hasil kosong sehingga UI hanya menampilkan 'data tidak valid' bila
+              // NIK & Nama memang tidak ditemukan
+              const parsed = { nik: '', name: '', tempat: '', tgl: '', address: '' };
+              window.lastKtpParse = Object.assign({ fileName: ktpFile.name }, parsed);
+              html += buildKtpHtmlFromParsed(parsed);
+            } finally {
+              URL.revokeObjectURL(ktpUrl);
+            }
           }
         } catch (err) {
-          html += `<p>❌ Gagal melakukan OCR pada KTP: ${escapeHtml(err.message || String(err))}</p>`;
-        } finally {
-          URL.revokeObjectURL(ktpUrl);
+          console.error('OCR proses gagal:', err);
+          const parsed = { nik: '', name: '', tempat: '', tgl: '', address: '' };
+          window.lastKtpParse = Object.assign({ fileName: ktpFile.name || '' }, parsed);
+          html += buildKtpHtmlFromParsed(parsed);
         }
       }
 
-      // If no NIK provided and no KTP uploaded, show warning
-      if (!nikFound && !ktpFile) {
-        html += `<p style="color:#b00; font-weight:bold;">data tidak valid, mohon unggah data lain.</p>`;
+      // Jika tidak ada masukan sama sekali tampilkan info.
+      if (!html && !ktpFile) {
+        html = '<p>ℹ️ Tidak ada masukan yang valid untuk diperiksa. Isi salah satu kolom atau unggah Foto KTP.</p>';
       }
 
       document.getElementById("output").innerHTML = html || '<p>ℹ️ Tidak ada masukan yang valid untuk diperiksa.</p>';
